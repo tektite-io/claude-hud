@@ -4,7 +4,7 @@ import { mkdtemp, readdir, rm, writeFile, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { parseTranscript } from '../dist/transcript.js';
+import { _setCreateReadStreamForTests, parseTranscript } from '../dist/transcript.js';
 import { countConfigs } from '../dist/config-reader.js';
 import { getContextPercent, getBufferedPercent, getModelName, getProviderLabel, isBedrockModelId } from '../dist/stdin.js';
 import * as fs from 'node:fs';
@@ -429,6 +429,30 @@ test('parseTranscript returns partial results when stream creation fails', async
     const result = await parseTranscript(transcriptDir);
     assert.equal(result.tools.length, 0);
   } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('parseTranscript does not cache partial results when stream creation fails after file state lookup', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'claude-hud-transcript-cache-'));
+  const configDir = path.join(dir, '.claude-test');
+  const transcriptPath = path.join(dir, 'stream-failure.jsonl');
+  const originalConfigDir = process.env.CLAUDE_CONFIG_DIR;
+  const cacheDir = path.join(configDir, 'plugins', 'claude-hud', 'transcript-cache');
+
+  process.env.CLAUDE_CONFIG_DIR = configDir;
+  await writeFile(transcriptPath, '{"timestamp":"2024-01-01T00:00:00.000Z"}\n', 'utf8');
+  _setCreateReadStreamForTests(() => {
+    throw new Error('boom');
+  });
+
+  try {
+    const result = await parseTranscript(transcriptPath);
+    assert.equal(result.tools.length, 0);
+    assert.equal(fs.existsSync(cacheDir), false);
+  } finally {
+    _setCreateReadStreamForTests(null);
+    restoreEnvVar('CLAUDE_CONFIG_DIR', originalConfigDir);
     await rm(dir, { recursive: true, force: true });
   }
 });

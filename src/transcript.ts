@@ -54,6 +54,8 @@ interface TranscriptCacheFile {
   data: SerializedTranscriptData;
 }
 
+let createReadStreamImpl: typeof fs.createReadStream = fs.createReadStream;
+
 function getTranscriptCachePath(transcriptPath: string, homeDir: string): string {
   const hash = createHash('sha256').update(path.resolve(transcriptPath)).digest('hex');
   return path.join(getHudPluginDir(homeDir), 'transcript-cache', `${hash}.json`);
@@ -172,8 +174,10 @@ export async function parseTranscript(transcriptPath: string): Promise<Transcrip
   let latestSlug: string | undefined;
   let customTitle: string | undefined;
 
+  let parsedCleanly = false;
+
   try {
-    const fileStream = fs.createReadStream(transcriptPath);
+    const fileStream = createReadStreamImpl(transcriptPath);
     const rl = readline.createInterface({
       input: fileStream,
       crlfDelay: Infinity,
@@ -194,6 +198,8 @@ export async function parseTranscript(transcriptPath: string): Promise<Transcrip
         // Skip malformed lines
       }
     }
+
+    parsedCleanly = true;
   } catch {
     // Return partial results on error
   }
@@ -202,9 +208,15 @@ export async function parseTranscript(transcriptPath: string): Promise<Transcrip
   result.agents = Array.from(agentMap.values()).slice(-10);
   result.todos = latestTodos;
   result.sessionName = customTitle ?? latestSlug;
-  writeTranscriptCache(transcriptPath, transcriptState, result);
+  if (parsedCleanly) {
+    writeTranscriptCache(transcriptPath, transcriptState, result);
+  }
 
   return result;
+}
+
+export function _setCreateReadStreamForTests(impl: typeof fs.createReadStream | null): void {
+  createReadStreamImpl = impl ?? fs.createReadStream;
 }
 
 function processEntry(
