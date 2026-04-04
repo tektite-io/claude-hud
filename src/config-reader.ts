@@ -176,6 +176,25 @@ function buildSentinelPaths(claudeDir: string, claudeConfigJsonPath: string, cwd
   return paths;
 }
 
+function collectRuleDirectorySentinels(rulesDir: string): string[] {
+  if (!fs.existsSync(rulesDir)) return [];
+
+  const sentinels = [rulesDir];
+  try {
+    const entries = fs.readdirSync(rulesDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory()) {
+        continue;
+      }
+      sentinels.push(...collectRuleDirectorySentinels(path.join(rulesDir, entry.name)));
+    }
+  } catch (error) {
+    debug(`Failed to read rule sentinel paths from ${rulesDir}:`, error);
+  }
+
+  return sentinels;
+}
+
 function statSentinels(paths: string[]): Record<string, SentinelState | null> {
   const result: Record<string, SentinelState | null> = {};
   for (const p of paths) {
@@ -199,19 +218,40 @@ function sentinelsMatch(a: Record<string, SentinelState | null>, b: Record<strin
   return true;
 }
 
-function readConfigCache(cacheKey: ConfigCacheKey, homeDir: string): ConfigCounts | null {
+function isConfigCounts(value: unknown): value is ConfigCounts {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+
+  const counts = value as Partial<ConfigCounts>;
+  return (
+    typeof counts.claudeMdCount === 'number'
+    && Number.isFinite(counts.claudeMdCount)
+    && counts.claudeMdCount >= 0
+    && typeof counts.rulesCount === 'number'
+    && Number.isFinite(counts.rulesCount)
+    && counts.rulesCount >= 0
+    && typeof counts.mcpCount === 'number'
+    && Number.isFinite(counts.mcpCount)
+    && counts.mcpCount >= 0
+    && typeof counts.hooksCount === 'number'
+    && Number.isFinite(counts.hooksCount)
+    && counts.hooksCount >= 0
+  );
+}
+
+function readConfigCache(cacheKey: Pick<ConfigCacheKey, 'cwd' | 'claudeConfigDir'>, homeDir: string): ConfigCacheFile | null {
   try {
     const cachePath = getConfigCachePath(cacheKey.cwd, cacheKey.claudeConfigDir, homeDir);
     const raw = fs.readFileSync(cachePath, 'utf8');
     const parsed = JSON.parse(raw) as ConfigCacheFile;
-    if (
-      parsed.key?.cwd !== cacheKey.cwd
-      || parsed.key?.claudeConfigDir !== cacheKey.claudeConfigDir
-      || !sentinelsMatch(parsed.key?.sentinels ?? {}, cacheKey.sentinels)
-    ) {
+    if (parsed.key?.cwd !== cacheKey.cwd || parsed.key?.claudeConfigDir !== cacheKey.claudeConfigDir) {
       return null;
     }
-    return parsed.data;
+    if (!isConfigCounts(parsed.data)) {
+      return null;
+    }
+    return parsed;
   } catch {
     return null;
   }
@@ -350,14 +390,34 @@ export async function countConfigs(cwd?: string): Promise<ConfigCounts> {
   const claudeConfigJsonPath = getClaudeConfigJsonPath(homeDir);
   const normalizedCwd = cwd ? path.resolve(cwd) : null;
 
-  const sentinelPaths = buildSentinelPaths(claudeDir, claudeConfigJsonPath, normalizedCwd);
-  const sentinels = statSentinels(sentinelPaths);
-  const cacheKey: ConfigCacheKey = { cwd: normalizedCwd, claudeConfigDir: claudeDir, sentinels };
+  const staticSentinelPaths = buildSentinelPaths(claudeDir, claudeConfigJsonPath, normalizedCwd);
+  const cached = readConfigCache({ cwd: normalizedCwd, claudeConfigDir: claudeDir }, homeDir);
+  const cacheValidationPaths = cached
+    ? Array.from(new Set([...staticSentinelPaths, ...Object.keys(cached.key.sentinels)]))
+    : staticSentinelPaths;
+  const currentSentinels = statSentinels(cacheValidationPaths);
 
-  const cached = readConfigCache(cacheKey, homeDir);
-  if (cached) return cached;
+  if (cached && sentinelsMatch(cached.key.sentinels, currentSentinels)) {
+    return cached.data;
+  }
 
   const result = computeConfigCountsFresh(cwd);
+
+  const ruleSentinelPaths = collectRuleDirectorySentinels(path.join(claudeDir, 'rules'));
+  const projectClaudeDir = normalizedCwd ? path.join(normalizedCwd, '.claude') : null;
+  const projectClaudeOverlapsUserScope = projectClaudeDir
+    ? pathsReferToSameLocation(projectClaudeDir, claudeDir)
+    : false;
+  if (normalizedCwd && !projectClaudeOverlapsUserScope) {
+    ruleSentinelPaths.push(...collectRuleDirectorySentinels(path.join(normalizedCwd, '.claude', 'rules')));
+  }
+
+  const cacheSentinelPaths = Array.from(new Set([...staticSentinelPaths, ...ruleSentinelPaths]));
+  const cacheKey: ConfigCacheKey = {
+    cwd: normalizedCwd,
+    claudeConfigDir: claudeDir,
+    sentinels: statSentinels(cacheSentinelPaths),
+  };
   writeConfigCache(cacheKey, result, homeDir);
   return result;
 }

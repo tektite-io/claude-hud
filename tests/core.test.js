@@ -1169,6 +1169,31 @@ test('countConfigs cache: miss on file deletion (CLAUDE.md removed)', async () =
   }
 });
 
+test('countConfigs cache: miss on nested rules additions', async () => {
+  const homeDir = await mkdtemp(path.join(tmpdir(), 'claude-hud-cc-'));
+  const projectDir = await mkdtemp(path.join(tmpdir(), 'claude-hud-proj-'));
+  const originalHome = process.env.HOME;
+  process.env.HOME = homeDir;
+
+  try {
+    await mkdir(path.join(homeDir, '.claude'), { recursive: true });
+    await mkdir(path.join(projectDir, '.claude', 'rules', 'nested'), { recursive: true });
+    await writeFile(path.join(projectDir, '.claude', 'rules', 'nested', 'one.md'), '# one', 'utf8');
+
+    const first = await countConfigs(projectDir);
+    assert.equal(first.rulesCount, 1);
+
+    await writeFile(path.join(projectDir, '.claude', 'rules', 'nested', 'two.md'), '# two', 'utf8');
+
+    const second = await countConfigs(projectDir);
+    assert.equal(second.rulesCount, 2, 'Should detect nested rules added after the cache was written');
+  } finally {
+    process.env.HOME = originalHome;
+    await rm(homeDir, { recursive: true, force: true });
+    await rm(projectDir, { recursive: true, force: true });
+  }
+});
+
 test('countConfigs cache: isolation between different cwds', async () => {
   const homeDir = await mkdtemp(path.join(tmpdir(), 'claude-hud-cc-'));
   const projectA = await mkdtemp(path.join(tmpdir(), 'claude-hud-projA-'));
@@ -1251,6 +1276,54 @@ test('countConfigs cache: corrupted cache file handled gracefully', async () => 
     // Should still return correct results via fresh recompute
     const second = await countConfigs();
     assert.equal(second.claudeMdCount, 1, 'Should recompute correctly after cache corruption');
+  } finally {
+    process.env.HOME = originalHome;
+    await rm(homeDir, { recursive: true, force: true });
+  }
+});
+
+test('countConfigs cache: malformed cache payload falls back to fresh recompute', async () => {
+  const homeDir = await mkdtemp(path.join(tmpdir(), 'claude-hud-cc-'));
+  const originalHome = process.env.HOME;
+  process.env.HOME = homeDir;
+
+  try {
+    await mkdir(path.join(homeDir, '.claude'), { recursive: true });
+    await writeFile(path.join(homeDir, '.claude', 'CLAUDE.md'), 'global', 'utf8');
+
+    const first = await countConfigs();
+    assert.equal(first.claudeMdCount, 1);
+
+    const cacheDir = await getConfigCacheDir(path.join(homeDir, '.claude'));
+    const cacheFiles = fs.readdirSync(cacheDir);
+    assert.equal(cacheFiles.length, 1);
+
+    fs.writeFileSync(path.join(cacheDir, cacheFiles[0]), JSON.stringify({
+      key: {
+        cwd: null,
+        claudeConfigDir: path.join(homeDir, '.claude'),
+        sentinels: {
+          [path.join(homeDir, '.claude', 'CLAUDE.md')]: fs.existsSync(path.join(homeDir, '.claude', 'CLAUDE.md'))
+            ? { mtimeMs: fs.statSync(path.join(homeDir, '.claude', 'CLAUDE.md')).mtimeMs, size: fs.statSync(path.join(homeDir, '.claude', 'CLAUDE.md')).size }
+            : null,
+          [path.join(homeDir, '.claude', 'rules')]: null,
+          [path.join(homeDir, '.claude', 'settings.json')]: null,
+          [path.join(homeDir, '.claude.json')]: null,
+        },
+      },
+      data: {
+        claudeMdCount: 'oops',
+        rulesCount: 999,
+        mcpCount: 999,
+        hooksCount: 999,
+      },
+    }), 'utf8');
+
+    const second = await countConfigs();
+    assert.equal(second.claudeMdCount, 1, 'Should ignore malformed cached counts and recompute');
+    assert.equal(second.rulesCount, 0);
+    assert.equal(second.mcpCount, 0);
+    assert.equal(second.hooksCount, 0);
   } finally {
     process.env.HOME = originalHome;
     await rm(homeDir, { recursive: true, force: true });
