@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { render } from '../dist/render/index.js';
+import { setLanguage } from '../dist/i18n/index.js';
 
 function baseContext() {
   return {
@@ -212,6 +213,47 @@ test('render falls back to stderr.columns when stdout.columns is unavailable', (
   assert.ok(lines.some(line => displayWidth(line) > 10), 'stderr width should override COLUMNS fallback');
 });
 
+test('render falls back to a safe default width when no terminal size is available', () => {
+  const ctx = baseContext();
+  ctx.stdin.model = { display_name: 'Sonnet 4.6' };
+  ctx.stdin.cwd = '/tmp/very-long-project-name-for-ghostty-fallback-check';
+  ctx.gitStatus = {
+    branch: 'feature/ghostty-width-fallback',
+    isDirty: true,
+    ahead: 0,
+    behind: 0,
+    fileStats: { modified: 2, added: 1, deleted: 0, untracked: 1 },
+  };
+  ctx.config.gitStatus.showFileStats = true;
+  ctx.usageData = {
+    planName: 'Pro',
+    fiveHour: 42,
+    sevenDay: 12,
+    fiveHourResetAt: new Date(Date.now() + 2 * 60 * 60 * 1000),
+    sevenDayResetAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+  };
+
+  const originalEnvColumns = process.env.COLUMNS;
+  let lines = [];
+  withColumns(process.stdout, undefined, () => {
+    withColumns(process.stderr, undefined, () => {
+      delete process.env.COLUMNS;
+      try {
+        lines = captureRender(ctx);
+      } finally {
+        if (originalEnvColumns === undefined) {
+          delete process.env.COLUMNS;
+        } else {
+          process.env.COLUMNS = originalEnvColumns;
+        }
+      }
+    });
+  });
+
+  assert.ok(lines.length > 1, 'should wrap output instead of emitting one oversized line');
+  assert.ok(lines.every(line => displayWidth(line) <= 40), 'all lines should fit the safe fallback width');
+});
+
 test('render prefers stdout columns over COLUMNS env fallback', () => {
   const ctx = baseContext();
   ctx.stdin.cwd = '/tmp/very-long-project-name-for-width-checking';
@@ -286,4 +328,30 @@ test('render truncation respects Unicode display width', () => {
 
   assert.ok(lines.some(line => line.includes('...')), 'should truncate an overlong Unicode segment');
   assert.ok(lines.every(line => displayWidth(line) <= 10), 'all lines should respect terminal cell width');
+});
+
+test('render respects terminal width with Chinese labels enabled', () => {
+  const ctx = baseContext();
+  ctx.config.lineLayout = 'expanded';
+  ctx.usageData = {
+    planName: 'Pro',
+    fiveHour: 42,
+    sevenDay: 12,
+    fiveHourResetAt: new Date(Date.now() + 90 * 60000),
+    sevenDayResetAt: new Date(Date.now() + 24 * 60 * 60000),
+  };
+
+  let lines = [];
+  setLanguage('zh');
+  try {
+    withTerminal(18, () => {
+      lines = captureRender(ctx);
+    });
+  } finally {
+    setLanguage('en');
+  }
+
+  assert.ok(lines.some(line => line.includes('上下文')), 'should render the translated context label');
+  assert.ok(lines.some(line => line.includes('用量')), 'should render the translated usage label');
+  assert.ok(lines.every(line => displayWidth(line) <= 18), 'all lines should fit terminal width with CJK labels');
 });
