@@ -22,15 +22,19 @@ export function renderSessionLine(ctx) {
         console.error(`[claude-hud:context] autocompactBuffer=disabled, showing raw ${rawPercent}% (buffered would be ${bufferedPercent}%)`);
     }
     const colors = ctx.config?.colors;
-    const barWidth = getAdaptiveBarWidth();
-    const bar = coloredBar(percent, barWidth, colors);
-    const parts = [];
     const display = ctx.config?.display;
+    const contextThresholds = {
+        warning: display?.contextWarningThreshold,
+        critical: display?.contextCriticalThreshold,
+    };
+    const barWidth = getAdaptiveBarWidth();
+    const bar = coloredBar(percent, barWidth, colors, contextThresholds);
+    const parts = [];
     const timeFormat = display?.timeFormat ?? 'relative';
     const resetsKey = timeFormat === 'absolute' ? 'format.resets' : 'format.resetsIn';
     const contextValueMode = display?.contextValue ?? 'percent';
     const contextValue = formatContextValue(ctx, percent, contextValueMode);
-    const contextValueDisplay = `${getContextColor(percent, colors)}${contextValue}${RESET}`;
+    const contextValueDisplay = `${getContextColor(percent, colors, contextThresholds)}${contextValue}${RESET}`;
     // Model and context bar (FIRST)
     const providerLabel = getProviderLabel(ctx.stdin);
     const modelQualifier = providerLabel ?? undefined;
@@ -271,7 +275,7 @@ export function renderSessionLine(ctx) {
     }
     let line = parts.join(' | ');
     // Token breakdown at high context
-    if (display?.showTokenBreakdown !== false && percent >= 85) {
+    if (display?.showTokenBreakdown !== false && percent >= (display?.contextCriticalThreshold ?? 85)) {
         const usage = ctx.stdin.context_window?.current_usage;
         if (usage) {
             const input = formatTokens(usage.input_tokens ?? 0);
