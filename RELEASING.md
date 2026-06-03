@@ -6,7 +6,9 @@ This project ships as a Claude Code plugin. Releases should include compiled `di
 
 1) Update versions:
    - `package.json`
+   - `package-lock.json`
    - `.claude-plugin/plugin.json`
+   - `.claude-plugin/marketplace.json`
    - `CHANGELOG.md`
 2) Build:
    ```bash
